@@ -16,8 +16,6 @@ SECTORS = {
     "NIFTY REALTY": ["DLF.NS", "LODHA.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "PHOENIXLTD.NS", "BRIGADE.NS", "PRESTIGE.NS", "SOBHA.NS"]
 }
 
-ALL_TICKERS = [t for tickers in SECTORS.values() for t in tickers]
-
 def calculate_buy_sell_signals(df):
     try:
         df = df.copy()
@@ -53,22 +51,22 @@ def index():
 
 @app.route('/api/screener-data')
 def screener_data():
-    try:
-        # Fast direct batch download in 1-2 seconds
-        data = yf.download(ALL_TICKERS, period="1mo", interval="1d", group_by='ticker', progress=False)
-        
-        matrix = []
-        dates_list = []
-        scanned_count = 0
+    matrix = []
+    dates_list = []
+    total_scanned = 0
 
-        for sector, tickers in SECTORS.items():
+    for sector, tickers in SECTORS.items():
+        try:
+            # Batch fetch by sector (Lightweight)
+            data = yf.download(tickers, period="1mo", interval="1d", group_by='ticker', progress=False)
+            
             sector_buy = []
             sector_sell = []
             valid_tickers = []
 
             for ticker in tickers:
                 try:
-                    df = data[ticker].dropna() if len(ALL_TICKERS) > 1 else data.dropna()
+                    df = data[ticker].dropna() if len(tickers) > 1 else data.dropna()
                     if not df.empty and len(df) > 5:
                         b_sig, s_sig = calculate_buy_sell_signals(df)
                         clean_sym = ticker.replace(".NS", "")
@@ -77,7 +75,7 @@ def screener_data():
                         sector_buy.append(b_sig)
                         sector_sell.append(s_sig)
                         valid_tickers.append(clean_sym)
-                        scanned_count += 1
+                        total_scanned += 1
                 except Exception:
                     continue
 
@@ -105,17 +103,15 @@ def screener_data():
                     "BuySignals": buy_pcts,
                     "SellSignals": sell_pcts
                 })
+        except Exception as e:
+            print(f"Error scanning {sector}:", e)
+            continue
 
-        return jsonify({
-            "dates": dates_list,
-            "matrix": matrix,
-            "current_scanned": scanned_count,
-            "total_to_scan": scanned_count,
-            "is_scanning": False
-        })
-    except Exception as e:
-        print("API Fetch Error:", e)
-        return jsonify({"dates": [], "matrix": [], "current_scanned": 0, "total_to_scan": 0, "is_scanning": False})
+    return jsonify({
+        "dates": dates_list,
+        "matrix": matrix,
+        "total_scanned": total_scanned
+    })
 
 @app.route('/details')
 def details():
