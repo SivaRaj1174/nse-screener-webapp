@@ -5,6 +5,7 @@ import yfinance as yf
 import requests
 import io
 import os
+import gc
 import threading
 import time
 
@@ -52,29 +53,38 @@ def fetch_all_nse_symbols():
     return list(set(fallback))
 
 def download_and_save_csv():
-    """ Download 2000+ stocks in RAM-safe chunks """
+    """ Low RAM Stream Downloader (Strictly under 150MB RAM) """
     symbols = fetch_all_nse_symbols()
-    batch_size = 25  # Small chunk size to avoid RAM limit (512MB)
+    batch_size = 20  # Ultra low batch size for Render Free RAM limit
     
     if os.path.exists(CACHE_FILE):
-        os.remove(CACHE_FILE)
+        try:
+            os.remove(CACHE_FILE)
+        except Exception:
+            pass
 
     first_batch = True
 
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i:i+batch_size]
         try:
-            data = yf.download(batch, period="1mo", interval="1d", group_by='ticker', progress=False)
+            # Download minimal required data period (10 days only to save memory)
+            data = yf.download(batch, period="10d", interval="1d", group_by='ticker', progress=False)
             batch_dfs = []
             
             for ticker in batch:
                 clean_sym = ticker.replace(".NS", "").strip()
                 try:
                     df = data[ticker].dropna() if len(batch) > 1 else data.dropna()
-                    if not df.empty and len(df) > 5:
-                        sub_df = df[['Open', 'High', 'Low', 'Close']].copy()
-                        sub_df['Symbol'] = clean_sym
-                        sub_df['Date'] = sub_df.index.strftime('%Y-%m-%d')
+                    if not df.empty and len(df) >= 3:
+                        sub_df = pd.DataFrame({
+                            'Open': df['Open'],
+                            'High': df['High'],
+                            'Low': df['Low'],
+                            'Close': df['Close'],
+                            'Symbol': clean_sym,
+                            'Date': df.index.strftime('%Y-%m-%d')
+                        })
                         batch_dfs.append(sub_df)
                 except Exception:
                     continue
@@ -86,10 +96,15 @@ def download_and_save_csv():
                     first_batch = False
                 else:
                     chunk_df.to_csv(CACHE_FILE, index=False, mode='a', header=False)
-                del chunk_df  # Free memory immediately
+                
+                del chunk_df
+                del batch_dfs
         except Exception:
-            continue
-        time.sleep(0.02)
+            pass
+        
+        # Clear Python memory explicitly
+        gc.collect()
+        time.sleep(0.01)
 
 def calculate_signals(df):
     try:
@@ -212,17 +227,16 @@ def process_csv_and_update_cache():
             CACHE["total_scanned"] = total_count
             CACHE["stock_details"] = stock_details_map
 
+        del full_df
+        gc.collect()
+
     except Exception as e:
         print("CSV processing error:", e)
 
-# Initial execution on boot
-process_csv_and_update_cache()
-
 def bg_updater():
     while True:
-        time.sleep(3600)  # Refresh every hour
-        download_and_save_csv()
         process_csv_and_update_cache()
+        time.sleep(3600)  # Refresh every hour
 
 threading.Thread(target=bg_updater, daemon=True).start()
 
