@@ -9,7 +9,6 @@ import time
 
 app = Flask(__name__)
 
-# Sector Mapping with extended liquid dictionary
 SECTORS_MAP = {
     "NIFTY BANK": ["HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK", "INDUSINDBK", "BANKBARODA", "PNB", "AUBANK", "FEDERALBNK", "IDFCFIRSTB", "CANBK"],
     "NIFTY IT": ["TCS", "INFY", "HCLTECH", "WIPRO", "TECHM", "LTIM", "PERSISTENT", "COFORGE", "MPHASIS", "LTTS"],
@@ -25,8 +24,7 @@ CACHE = {
     "dates": [],
     "matrix": [],
     "total_scanned": 0,
-    "stock_details": {},
-    "is_scanning": True
+    "stock_details": {}
 }
 
 cache_lock = threading.Lock()
@@ -45,7 +43,6 @@ def get_all_nse_symbols():
     except Exception:
         pass
     
-    # Comprehensive Fallback
     all_syms = []
     for syms in SECTORS_MAP.values():
         all_syms.extend([f"{s}.NS" for s in syms])
@@ -88,7 +85,6 @@ def scan_worker():
             batch_size = 40
             scanned_records = {}
 
-            # Reverse Symbol to Sector lookup
             sym_to_sector = {}
             for sec, stocks in SECTORS_MAP.items():
                 for s in stocks:
@@ -104,7 +100,7 @@ def scan_worker():
                             df = data[ticker].dropna() if len(batch) > 1 else data.dropna()
                             if not df.empty and len(df) > 5:
                                 buy_sig, sell_sig = calculate_buy_sell_signals(df)
-                                sec = sym_to_sector.get(clean_sym, "OTHERS / NSE ALL EQUITIES")
+                                sec = sym_to_sector.get(clean_sym, "OTHERS / ALL NSE EQUITIES")
                                 
                                 if sec not in scanned_records:
                                     scanned_records[sec] = []
@@ -137,7 +133,6 @@ def scan_worker():
                 buy_pcts = []
                 sell_pcts = []
 
-                # Correct % Calculation Logic Across All 5 Days
                 for d in recent_dates:
                     b_cnt = sum([1 for item in stock_list if item['buy_sig'].get(d, False)])
                     s_cnt = sum([1 for item in stock_list if item['sell_sig'].get(d, False)])
@@ -178,7 +173,6 @@ def scan_worker():
                 CACHE["matrix"] = matrix
                 CACHE["total_scanned"] = total_count
                 CACHE["stock_details"] = stock_details_map
-                CACHE["is_scanning"] = False
 
         except Exception as e:
             print("Worker Error:", e)
@@ -197,8 +191,7 @@ def screener_data():
         return jsonify({
             "dates": CACHE.get("dates", []),
             "matrix": CACHE.get("matrix", []),
-            "total_scanned": CACHE.get("total_scanned", 0),
-            "is_scanning": CACHE.get("is_scanning", True)
+            "total_scanned": CACHE.get("total_scanned", 0)
         })
 
 @app.route('/details')
