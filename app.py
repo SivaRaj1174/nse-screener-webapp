@@ -7,23 +7,26 @@ import time
 
 app = Flask(__name__)
 
+# Complete Major Sector Mapping for NSE
+SECTORS = {
+    "NIFTY BANK": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS", "KOTAKBANK.NS", "INDUSINDBK.NS", "BANKBARODA.NS", "PNB.NS", "AUBANK.NS", "FEDERALBNK.NS", "IDFCFIRSTB.NS", "CANBK.NS"],
+    "NIFTY IT": ["TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS", "LTIM.NS", "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS", "LTTS.NS"],
+    "NIFTY AUTO": ["TATAMOTORS.NS", "MARUTI.NS", "M&M.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS", "EICHERMOT.NS", "TVSMOTOR.NS", "BOSCHLTD.NS", "BHARATFORG.NS", "TIINDIA.NS"],
+    "NIFTY PHARMA": ["SUNPHARMA.NS", "CIPLA.NS", "DRREDDY.NS", "DIVISLAB.NS", "LUPIN.NS", "AURPHARMA.NS", "TORNTPHARM.NS", "ALKEM.NS", "BIOCON.NS", "GLENMARK.NS"],
+    "NIFTY FMCG": ["ITC.NS", "HINDUNILVR.NS", "NESTLEIND.NS", "BRITANNIA.NS", "TATACONSUM.NS", "DABUR.NS", "GODREJCP.NS", "MARICO.NS", "COLPAL.NS", "VBL.NS"],
+    "NIFTY METAL": ["TATASTEEL.NS", "JINDALSTEL.NS", "HINDALCO.NS", "NMDC.NS", "SAIL.NS", "NATIONALUM.NS", "VEDL.NS", "JSWSTEEL.NS", "APLAPOLLO.NS", "HINDZINC.NS"],
+    "NIFTY ENERGY": ["RELIANCE.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS", "BPCL.NS", "IOC.NS", "GAIL.NS", "TATAPOWER.NS", "ADANIGREEN.NS", "COALINDIA.NS"],
+    "NIFTY REALTY": ["DLF.NS", "LODHA.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "PHOENIXLTD.NS", "BRIGADE.NS", "PRESTIGE.NS", "SOBHA.NS"]
+}
+
+ALL_TICKERS = [t for tickers in SECTORS.values() for t in tickers]
+
 CACHE = {
     "dates": [],
     "matrix": [],
     "total_scanned": 0,
     "stock_details": {}
 }
-
-def get_all_nse_symbols():
-    try:
-        url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-        df = pd.read_csv(url)
-        df_eq = df[df[' SERIES'] == 'EQ']
-        symbols = [f"{sym}.NS" for sym in df_eq['SYMBOL'].tolist()]
-        return symbols
-    except Exception:
-        # Fallback list if NSE archive CSV fails
-        return [f"STOCK{i}.NS" for i in range(500)]
 
 def calculate_signals(df):
     try:
@@ -50,35 +53,34 @@ def calculate_signals(df):
     except Exception:
         return pd.Series([False]*len(df), index=df.index)
 
-def scan_all_nse_stocks_background():
+def run_bulk_scan():
     global CACHE
-    while True:
-        try:
-            symbols = get_all_nse_symbols()
-            batch_size = 100
-            all_scanned_signals = []
-            
-            # Batching to bypass memory limit on free servers
-            for i in range(0, len(symbols), batch_size):
-                batch = symbols[i:i+batch_size]
+    try:
+        print("Starting synchronous Bulk Data Fetch...")
+        # Rapid vectorized bulk download
+        data = yf.download(ALL_TICKERS, period="1mo", interval="1d", group_by='ticker', progress=False)
+        
+        matrix = []
+        dates_list = []
+        stock_details_map = {}
+        total_scanned_count = 0
+
+        for sector, tickers in SECTORS.items():
+            sector_signals = []
+            for ticker in tickers:
                 try:
-                    data = yf.download(batch, period="1mo", interval="1d", group_by='ticker', progress=False)
-                    for ticker in batch:
-                        try:
-                            clean_sym = ticker.replace(".NS", "")
-                            df = data[ticker].dropna() if len(batch) > 1 else data.dropna()
-                            if not df.empty and len(df) > 5:
-                                sig = calculate_signals(df)
-                                sig.name = clean_sym
-                                all_scanned_signals.append(sig)
-                        except Exception:
-                            continue
+                    df = data[ticker].dropna() if len(ALL_TICKERS) > 1 else data.dropna()
+                    if not df.empty and len(df) > 5:
+                        sig = calculate_signals(df)
+                        clean_sym = ticker.replace(".NS", "")
+                        sig.name = clean_sym
+                        sector_signals.append(sig)
+                        total_scanned_count += 1
                 except Exception:
                     continue
-                time.sleep(0.1) # Small pause to keep CPU usage low
-
-            if all_scanned_signals:
-                combined = pd.concat(all_scanned_signals, axis=1).fillna(False)
+            
+            if sector_signals:
+                combined = pd.concat(sector_signals, axis=1).fillna(False)
                 daily_counts = combined.sum(axis=1)
                 recent_counts = daily_counts.tail(5).iloc[::-1]
                 dates_list = [d.strftime('%b %d') for d in recent_counts.index]
@@ -94,26 +96,35 @@ def scan_all_nse_stocks_background():
                         "status": "🟢 BUY SIGNAL" if is_buy else "⚪ NO SIGNAL",
                         "tv_link": f"https://in.tradingview.com/chart/?symbol=NSE:{stock}"
                     })
-
-                CACHE = {
-                    "dates": dates_list,
-                    "matrix": [{
-                        "Sector": "ALL NSE EQUITIES",
-                        "CompanyCount": len(all_scanned_signals),
-                        "Signals": [int((c / len(all_scanned_signals)) * 100) for c in recent_counts.values]
-                    }],
-                    "total_scanned": len(symbols),
-                    "stock_details": {"ALL NSE EQUITIES": details_list}
+                
+                stock_details_map[sector] = details_list
+                
+                row = {
+                    "Sector": sector,
+                    "CompanyCount": len(tickers),
+                    "Signals": [int((c / len(tickers)) * 100) for c in recent_counts.values]
                 }
-                print(f"Successfully scanned {len(all_scanned_signals)} / {len(symbols)} stocks!")
-        except Exception as e:
-            print("Background Scanner Error:", e)
-            
-        time.sleep(1800) # Re-scan every 30 minutes
+                matrix.append(row)
 
-# Start Background Processing
-bg_thread = threading.Thread(target=scan_all_nse_stocks_background, daemon=True)
-bg_thread.start()
+        CACHE = {
+            "dates": dates_list,
+            "matrix": matrix,
+            "total_scanned": total_scanned_count,
+            "stock_details": stock_details_map
+        }
+        print(f"Scan complete. {total_scanned_count} stocks loaded!")
+    except Exception as e:
+        print("Bulk scan error:", e)
+
+# Instant sync scan on startup so data is ready when app launches
+run_bulk_scan()
+
+def periodic_background_rescan():
+    while True:
+        time.sleep(1800) # Rescan every 30 mins
+        run_bulk_scan()
+
+threading.Thread(target=periodic_background_rescan, daemon=True).start()
 
 @app.route('/')
 def index():
@@ -129,7 +140,7 @@ def screener_data():
 
 @app.route('/details')
 def details():
-    sector_name = request.args.get('sector', 'ALL NSE EQUITIES')
+    sector_name = request.args.get('sector', '')
     details_map = CACHE.get("stock_details", {})
     stocks = details_map.get(sector_name, [])
     return render_template('details.html', sector=sector_name, stocks=stocks)
