@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>NSE Market Pulse Screener - Live Progress</title>
+    <title>NSE Market Pulse Screener</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, sans-serif; margin: 20px; background-color: #f8f9fa; }
         h1 { color: #1e293b; margin-bottom: 5px; }
@@ -20,7 +20,7 @@
 <body>
 
     <h1>🔥 Market Pulse - Sector Wise Buy & Sell Screener</h1>
-    <div class="stats-bar" id="totalScanned">🔍 Scanning Progress: <span>0 / 0 Stocks</span></div>
+    <div class="stats-bar" id="totalScanned">⏳ Loading Sector Data...</div>
     
     <p>💡 Company Count அல்லது Sector-ஐ கிளிக் செய்தால் **புதிய Tab-ல்** தனித்தனி பங்குகளின் Buy/Sell விவரங்கள் திறக்கும்.</p>
 
@@ -32,7 +32,7 @@
             </tr>
         </thead>
         <tbody id="tableBody">
-            <tr><td colspan="12">பின்னணியில் பங்குகள் ஸ்கேன் செய்யப்படுகின்றன... நேரலை நிலையை மேலே உள்ள பாக்ஸில் பார்க்கலாம்...</td></tr>
+            <tr><td colspan="12">தரவுகள் பெறப்படுகின்றன... தயவுசெய்து 3-5 வினாடிகள் காத்திருக்கவும்...</td></tr>
         </tbody>
     </table>
 
@@ -42,16 +42,12 @@
                 const response = await fetch('/api/screener-data');
                 const data = await response.json();
                 
-                const statsDiv = document.getElementById('totalScanned');
-                if(data.is_scanning) {
-                    statsDiv.innerHTML = `⏳ Scanning in Progress: <span style="color:#f59e0b;">${data.current_scanned} / ${data.total_to_scan} Stocks</span>`;
-                } else {
-                    statsDiv.innerHTML = `✅ Scan Completed: <span style="color:#22c55e;">${data.current_scanned} / ${data.total_to_scan} Stocks Loaded</span>`;
-                }
-
                 if(!data.matrix || data.matrix.length === 0) {
+                    document.getElementById('tableBody').innerHTML = '<tr><td colspan="12" style="color:red;">தரவுகள் பெற முடியவில்லை. பக்கத்தை Refresh செய்யவும்.</td></tr>';
                     return;
                 }
+
+                document.getElementById('totalScanned').innerHTML = `✅ Total Scanned Stocks: <span style="color:#22c55e;">${data.total_scanned} Active NSE Stocks</span>`;
 
                 const headerRow = document.getElementById('headerRow');
                 headerRow.innerHTML = '<th>Sector</th><th>Company Count</th>';
@@ -87,11 +83,11 @@
                 });
             } catch (err) {
                 console.error(err);
+                document.getElementById('tableBody').innerHTML = '<tr><td colspan="12" style="color:red;">Error loading data. Please refresh.</td></tr>';
             }
         }
 
         fetchScreener();
-        setInterval(fetchScreener, 3000); // Refresh progress every 3 seconds
     </script>
 </body>
 </html>
