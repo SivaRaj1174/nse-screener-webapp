@@ -2,9 +2,6 @@ from flask import Flask, render_template, jsonify, request
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import threading
-import time
-import requests
 
 app = Flask(__name__)
 
@@ -19,36 +16,7 @@ SECTORS = {
     "NIFTY REALTY": ["DLF.NS", "LODHA.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "PHOENIXLTD.NS", "BRIGADE.NS", "PRESTIGE.NS", "SOBHA.NS"]
 }
 
-CACHE = {
-    "dates": [],
-    "matrix": [],
-    "current_scanned": 0,
-    "total_to_scan": 0,
-    "is_scanning": True,
-    "stock_details": {}
-}
-
-def get_all_nse_symbols():
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    try:
-        url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            df = pd.read_csv(pd.compat.StringIO(res.text))
-            df_eq = df[df[' SERIES'] == 'EQ']
-            symbols = [f"{sym}.NS" for sym in df_eq['SYMBOL'].tolist()]
-            if len(symbols) > 100:
-                return symbols
-    except Exception as e:
-        print("NSE Fetch Error, using fallback sector list:", e)
-    
-    # Direct Fallback List across sectors if NSE URL fails
-    all_syms = []
-    for syms in SECTORS.values():
-        all_syms.extend(syms)
-    return list(set(all_syms))
+ALL_TICKERS = [t for tickers in SECTORS.values() for t in tickers]
 
 def calculate_buy_sell_signals(df):
     try:
@@ -79,130 +47,111 @@ def calculate_buy_sell_signals(df):
         empty = pd.Series([False]*len(df), index=df.index)
         return empty, empty
 
-def scan_all_stocks_background():
-    global CACHE
-    while True:
-        try:
-            all_symbols = get_all_nse_symbols()
-            CACHE["total_to_scan"] = len(all_symbols)
-            CACHE["current_scanned"] = 0
-            CACHE["is_scanning"] = True
-            
-            batch_size = 20
-            scanned_data = {}
-            
-            symbol_to_sector = {}
-            for sector, t_list in SECTORS.items():
-                for t in t_list:
-                    symbol_to_sector[t] = sector
-
-            for i in range(0, len(all_symbols), batch_size):
-                batch = all_symbols[i:i+batch_size]
-                try:
-                    data = yf.download(batch, period="1mo", interval="1d", group_by='ticker', progress=False)
-                    for ticker in batch:
-                        try:
-                            clean_sym = ticker.replace(".NS", "")
-                            df = data[ticker].dropna() if len(batch) > 1 else data.dropna()
-                            if not df.empty and len(df) > 5:
-                                buy_sig, sell_sig = calculate_buy_sell_signals(df)
-                                sec = symbol_to_sector.get(ticker, "OTHERS / ALL NSE EQUITIES")
-                                if sec not in scanned_data:
-                                    scanned_data[sec] = []
-                                scanned_data[sec].append({
-                                    "symbol": clean_sym,
-                                    "buy_sig": buy_sig,
-                                    "sell_sig": sell_sig
-                                })
-                        except Exception:
-                            pass
-                        CACHE["current_scanned"] += 1
-                except Exception:
-                    CACHE["current_scanned"] += len(batch)
-                time.sleep(0.05)
-
-            matrix = []
-            dates_list = []
-            stock_details_map = {}
-
-            for sector, stock_list in scanned_data.items():
-                if not stock_list:
-                    continue
-                
-                ref_buy = stock_list[0]['buy_sig']
-                recent_dates = ref_buy.tail(5).index[::-1]
-                dates_list = [d.strftime('%b %d') for d in recent_dates]
-                
-                buy_percentages = []
-                sell_percentages = []
-
-                for d in recent_dates:
-                    b_cnt = sum([1 for item in stock_list if item['buy_sig'].get(d, False)])
-                    s_cnt = sum([1 for item in stock_list if item['sell_sig'].get(d, False)])
-                    
-                    buy_pct = int((b_cnt / len(stock_list)) * 100)
-                    sell_pct = int((s_cnt / len(stock_list)) * 100)
-                    
-                    buy_percentages.append(buy_pct)
-                    sell_percentages.append(sell_pct)
-
-                latest_d = recent_dates[0]
-                details = []
-                for item in stock_list:
-                    is_b = item['buy_sig'].get(latest_d, False)
-                    is_s = item['sell_sig'].get(latest_d, False)
-                    status = "⚪ NO SIGNAL"
-                    if is_b:
-                        status = "🟢 BUY SIGNAL"
-                    elif is_s:
-                        status = "🔴 SELL SIGNAL"
-
-                    details.append({
-                        "symbol": item['symbol'],
-                        "status": status,
-                        "tv_link": f"https://in.tradingview.com/chart/?symbol=NSE:{item['symbol']}"
-                    })
-
-                stock_details_map[sector] = details
-
-                matrix.append({
-                    "Sector": sector,
-                    "CompanyCount": len(stock_list),
-                    "BuySignals": buy_percentages,
-                    "SellSignals": sell_percentages
-                })
-
-            CACHE["dates"] = dates_list
-            CACHE["matrix"] = matrix
-            CACHE["stock_details"] = stock_details_map
-            CACHE["is_scanning"] = False
-        except Exception as e:
-            print("Scanner Error:", e)
-
-        time.sleep(1800)
-
-bg_thread = threading.Thread(target=scan_all_stocks_background, daemon=True)
-bg_thread.start()
-
 @app.route('/')
 def index():
     return render_template('index.html')
 
 @app.route('/api/screener-data')
 def screener_data():
-    return jsonify({
-        "dates": CACHE.get("dates", []),
-        "matrix": CACHE.get("matrix", []),
-        "current_scanned": CACHE.get("current_scanned", 0),
-        "total_to_scan": CACHE.get("total_to_scan", 0),
-        "is_scanning": CACHE.get("is_scanning", True)
-    })
+    try:
+        # Fast direct batch download in 1-2 seconds
+        data = yf.download(ALL_TICKERS, period="1mo", interval="1d", group_by='ticker', progress=False)
+        
+        matrix = []
+        dates_list = []
+        scanned_count = 0
+
+        for sector, tickers in SECTORS.items():
+            sector_buy = []
+            sector_sell = []
+            valid_tickers = []
+
+            for ticker in tickers:
+                try:
+                    df = data[ticker].dropna() if len(ALL_TICKERS) > 1 else data.dropna()
+                    if not df.empty and len(df) > 5:
+                        b_sig, s_sig = calculate_buy_sell_signals(df)
+                        clean_sym = ticker.replace(".NS", "")
+                        b_sig.name = clean_sym
+                        s_sig.name = clean_sym
+                        sector_buy.append(b_sig)
+                        sector_sell.append(s_sig)
+                        valid_tickers.append(clean_sym)
+                        scanned_count += 1
+                except Exception:
+                    continue
+
+            if sector_buy and sector_sell:
+                combined_buy = pd.concat(sector_buy, axis=1).fillna(False)
+                combined_sell = pd.concat(sector_sell, axis=1).fillna(False)
+                
+                recent_dates = combined_buy.tail(5).index[::-1]
+                dates_list = [d.strftime('%b %d') for d in recent_dates]
+
+                buy_pcts = []
+                sell_pcts = []
+
+                for d in recent_dates:
+                    b_cnt = int(combined_buy.loc[d].sum()) if d in combined_buy.index else 0
+                    s_cnt = int(combined_sell.loc[d].sum()) if d in combined_sell.index else 0
+                    
+                    t_count = len(valid_tickers)
+                    buy_pcts.append(int((b_cnt / t_count) * 100) if t_count > 0 else 0)
+                    sell_pcts.append(int((s_cnt / t_count) * 100) if t_count > 0 else 0)
+
+                matrix.append({
+                    "Sector": sector,
+                    "CompanyCount": len(valid_tickers),
+                    "BuySignals": buy_pcts,
+                    "SellSignals": sell_pcts
+                })
+
+        return jsonify({
+            "dates": dates_list,
+            "matrix": matrix,
+            "current_scanned": scanned_count,
+            "total_to_scan": scanned_count,
+            "is_scanning": False
+        })
+    except Exception as e:
+        print("API Fetch Error:", e)
+        return jsonify({"dates": [], "matrix": [], "current_scanned": 0, "total_to_scan": 0, "is_scanning": False})
 
 @app.route('/details')
 def details():
     sector_name = request.args.get('sector', '')
-    details_map = CACHE.get("stock_details", {})
-    stocks = details_map.get(sector_name, [])
+    tickers = SECTORS.get(sector_name, [])
+    stocks = []
+    
+    if tickers:
+        try:
+            data = yf.download(tickers, period="1mo", interval="1d", group_by='ticker', progress=False)
+            for ticker in tickers:
+                clean_sym = ticker.replace(".NS", "")
+                try:
+                    df = data[ticker].dropna() if len(tickers) > 1 else data.dropna()
+                    if not df.empty and len(df) > 5:
+                        b_sig, s_sig = calculate_buy_sell_signals(df)
+                        latest_date = df.index[-1]
+                        is_b = bool(b_sig.loc[latest_date])
+                        is_s = bool(s_sig.loc[latest_date])
+                        
+                        status = "⚪ NO SIGNAL"
+                        if is_b:
+                            status = "🟢 BUY SIGNAL"
+                        elif is_s:
+                            status = "🔴 SELL SIGNAL"
+
+                        stocks.append({
+                            "symbol": clean_sym,
+                            "status": status,
+                            "tv_link": f"https://in.tradingview.com/chart/?symbol=NSE:{clean_sym}"
+                        })
+                except Exception:
+                    stocks.append({"symbol": clean_sym, "status": "⚪ NO SIGNAL", "tv_link": f"https://in.tradingview.com/chart/?symbol=NSE:{clean_sym}"})
+        except Exception:
+            pass
+
     return render_template('details.html', sector=sector_name, stocks=stocks)
 
 if __name__ == '__main__':
