@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>NSE Market Pulse Screener</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; margin: 20px; background-color: #f8f9fa; }
+        h1 { color: #1e293b; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        th, td { padding: 12px; text-align: center; border: 1px solid #e2e8f0; }
+        th { background-color: #0f172a; color: white; }
+        .sector-cell, .count-cell { font-weight: bold; cursor: pointer; color: #2563eb; }
+        .count-cell { background-color: #f0f9ff; }
+        .count-cell:hover, .sector-cell:hover { text-decoration: underline; background-color: #e0f2fe; }
+        .heat-100 { background-color: #22c55e; color: white; font-weight: bold; }
+        .heat-66 { background-color: #86efac; color: black; }
+        .heat-33 { background-color: #dcfce7; color: black; }
+        .heat-0 { background-color: #f8fafc; color: #94a3b8; }
+    </style>
+</head>
+<body>
+
+    <h1>🔥 Market Pulse - Sector Heatmap</h1>
+    <p>💡 Company Count அல்லது Sector-ஐ கிளிக் செய்தால் <b>புதிய Tab-ல் (New Tab)</b> விவரங்கள் திறக்கும்.</p>
+
+    <table id="screenerTable">
+        <thead>
+            <tr id="headerRow">
+                <th>Sector</th>
+                <th>Company Count</th>
+            </tr>
+        </thead>
+        <tbody id="tableBody">
+            <tr><td colspan="12">தரவுகள் பெறப்படுகின்றன... தயவுசெய்து காத்திருக்கவும்...</td></tr>
+        </tbody>
+    </table>
+
+    <script>
+        async function fetchScreener() {
+            const response = await fetch('/api/screener-data');
+            const data = await response.json();
+            
+            const headerRow = document.getElementById('headerRow');
+            data.dates.forEach(d => {
+                const th = document.createElement('th');
+                th.innerText = d;
+                headerRow.appendChild(th);
+            });
+
+            const tbody = document.getElementById('tableBody');
+            tbody.innerHTML = '';
+
+            data.matrix.forEach(row => {
+                const tr = document.createElement('tr');
+                const detailUrl = `/details?sector=${encodeURIComponent(row.Sector)}`;
+
+                let html = `<td class="sector-cell" onclick="window.open('${detailUrl}', '_blank')">${row.Sector}</td>`;
+                html += `<td class="count-cell" onclick="window.open('${detailUrl}', '_blank')">${row.CompanyCount}</td>`;
+
+                row.Signals.forEach(val => {
+                    let colorClass = 'heat-0';
+                    if(val >= 60) colorClass = 'heat-100';
+                    else if(val >= 30) colorClass = 'heat-66';
+                    else if(val > 0) colorClass = 'heat-33';
+
+                    html += `<td class="${colorClass}">${val}%</td>`;
+                });
+
+                tr.innerHTML = html;
+                tbody.appendChild(tr);
+            });
+        }
+
+        fetchScreener();
+    </script>
+</body>
+</html>
