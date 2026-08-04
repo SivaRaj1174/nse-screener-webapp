@@ -2,23 +2,23 @@ from flask import Flask, render_template, jsonify, request
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import requests
+import io
 import threading
 import time
 
 app = Flask(__name__)
 
 SECTORS_MAP = {
-    "NIFTY BANK": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS", "KOTAKBANK.NS", "INDUSINDBK.NS", "BANKBARODA.NS", "PNB.NS", "AUBANK.NS", "FEDERALBNK.NS", "IDFCFIRSTB.NS", "CANBK.NS"],
-    "NIFTY IT": ["TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS", "LTIM.NS", "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS", "LTTS.NS"],
-    "NIFTY AUTO": ["TATAMOTORS.NS", "MARUTI.NS", "M&M.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS", "EICHERMOT.NS", "TVSMOTOR.NS", "BOSCHLTD.NS", "BHARATFORG.NS", "TIINDIA.NS"],
-    "NIFTY PHARMA": ["SUNPHARMA.NS", "CIPLA.NS", "DRREDDY.NS", "DIVISLAB.NS", "LUPIN.NS", "AUROPHARMA.NS", "TORNTPHARM.NS", "ALKEM.NS", "BIOCON.NS", "GLENMARK.NS"],
-    "NIFTY FMCG": ["ITC.NS", "HINDUNILVR.NS", "NESTLEIND.NS", "BRITANNIA.NS", "TATACONSUM.NS", "DABUR.NS", "GODREJCP.NS", "MARICO.NS", "COLPAL.NS", "VBL.NS"],
-    "NIFTY METAL": ["TATASTEEL.NS", "JINDALSTEL.NS", "HINDALCO.NS", "NMDC.NS", "SAIL.NS", "NATIONALUM.NS", "VEDL.NS", "JSWSTEEL.NS", "APLAPOLLO.NS", "HINDZINC.NS"],
-    "NIFTY ENERGY": ["RELIANCE.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS", "BPCL.NS", "IOC.NS", "GAIL.NS", "TATAPOWER.NS", "ADANIGREEN.NS", "COALINDIA.NS"],
-    "NIFTY REALTY": ["DLF.NS", "LODHA.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "PHOENIXLTD.NS", "BRIGADE.NS", "PRESTIGE.NS", "SOBHA.NS"]
+    "NIFTY BANK": ["HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK", "INDUSINDBK", "BANKBARODA", "PNB", "AUBANK", "FEDERALBNK", "IDFCFIRSTB", "CANBK"],
+    "NIFTY IT": ["TCS", "INFY", "HCLTECH", "WIPRO", "TECHM", "LTIM", "PERSISTENT", "COFORGE", "MPHASIS", "LTTS"],
+    "NIFTY AUTO": ["TATAMOTORS", "MARUTI", "M&M", "BAJAJ-AUTO", "HEROMOTOCO", "EICHERMOT", "TVSMOTOR", "BOSCHLTD", "BHARATFORG", "TIINDIA"],
+    "NIFTY PHARMA": ["SUNPHARMA", "CIPLA", "DRREDDY", "DIVISLAB", "LUPIN", "AUROPHARMA", "TORNTPHARM", "ALKEM", "BIOCON", "GLENMARK"],
+    "NIFTY FMCG": ["ITC", "HINDUNILVR", "NESTLEIND", "BRITANNIA", "TATACONSUM", "DABUR", "GODREJCP", "MARICO", "COLPAL", "VBL"],
+    "NIFTY METAL": ["TATASTEEL", "JINDALSTEL", "HINDALCO", "NMDC", "SAIL", "NATIONALUM", "VEDL", "JSWSTEEL", "APLAPOLLO", "HINDZINC"],
+    "NIFTY ENERGY": ["RELIANCE", "NTPC", "POWERGRID", "ONGC", "BPCL", "IOC", "GAIL", "TATAPOWER", "ADANIGREEN", "COALINDIA"],
+    "NIFTY REALTY": ["DLF", "LODHA", "GODREJPROP", "OBEROIRLTY", "PHOENIXLTD", "BRIGADE", "PRESTIGE", "SOBHA"]
 }
-
-ALL_STOCKS = [s for sub in SECTORS_MAP.values() for s in sub]
 
 CACHE = {
     "dates": [],
@@ -27,7 +27,29 @@ CACHE = {
     "stock_details": {}
 }
 
-def calculate_buy_sell_signals(df):
+cache_lock = threading.Lock()
+
+def get_all_nse_symbols():
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    try:
+        url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            df = pd.read_csv(io.StringIO(res.text))
+            df_eq = df[df[' SERIES'] == 'EQ']
+            symbols = [f"{sym.strip()}.NS" for sym in df_eq['SYMBOL'].tolist()]
+            if len(symbols) > 500:
+                return symbols
+    except Exception:
+        pass
+    
+    # Fallback to sector list if URL fails
+    all_syms = []
+    for syms in SECTORS_MAP.values():
+        all_syms.extend([f"{s}.NS" for s in syms])
+    return list(set(all_syms))
+
+def calculate_signals(df):
     try:
         df = df.copy()
         ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
@@ -39,76 +61,97 @@ def calculate_buy_sell_signals(df):
             
         ha_high = np.maximum(df['High'], np.maximum(ha_open, ha_close))
         ha_low = np.minimum(df['Low'], np.minimum(ha_open, ha_close))
+        
         ha_body = np.abs(ha_close - ha_open)
         nrml_body = np.abs(df['Close'] - df['Open'])
         
+        # Bullish and Bearish Heikin-Ashi reversal conditions
         buy_cond = (ha_body.shift(2) > ha_body.shift(1)) & (nrml_body.shift(2) < nrml_body.shift(1)) & (ha_open.shift(2) < ha_close.shift(2))
         sell_cond = (ha_body.shift(2) > ha_body.shift(1)) & (nrml_body.shift(2) < nrml_body.shift(1)) & (ha_open.shift(2) > ha_close.shift(2))
         
         saved_buy_price = pd.Series(np.where(buy_cond, ha_high.shift(1), np.nan), index=df.index).ffill()
-        saved_sell_exit_price = pd.Series(np.where(sell_cond, ha_low.shift(1), np.nan), index=df.index).ffill()
+        saved_sell_price = pd.Series(np.where(sell_cond, ha_low.shift(1), np.nan), index=df.index).ffill()
         
-        raw_buy = (df['Close'] > saved_buy_price) & (df['Close'] > saved_sell_exit_price)
-        raw_sell = (df['Close'] < saved_sell_exit_price) | (df['Close'] < saved_buy_price)
+        # Proper non-overlapping Buy and Sell logic
+        buy_sig = (df['Close'] > saved_buy_price) & (~saved_buy_price.isna())
+        sell_sig = (df['Close'] < saved_sell_price) & (~saved_sell_price.isna()) & (~buy_sig)
         
-        return raw_buy.fillna(False), raw_sell.fillna(False)
+        return buy_sig.fillna(False), sell_sig.fillna(False)
     except Exception:
         empty = pd.Series([False]*len(df), index=df.index)
         return empty, empty
 
-def run_screener():
+def bg_scanner():
     global CACHE
-    try:
-        data = yf.download(ALL_STOCKS, period="1mo", interval="1d", group_by='ticker', progress=False)
-        
-        matrix = []
-        dates_list = []
-        stock_details_map = {}
-        total_scanned_count = 0
+    while True:
+        try:
+            symbols = get_all_nse_symbols()
+            batch_size = 35
+            
+            # Map symbol to sector
+            sym_to_sector = {}
+            for sec, st_list in SECTORS_MAP.items():
+                for s in st_list:
+                    sym_to_sector[s] = sec
 
-        for sector, tickers in SECTORS_MAP.items():
-            sector_buy = []
-            sector_sell = []
-            valid_tickers = []
+            scanned_records = {}
 
-            for ticker in tickers:
-                clean_sym = ticker.replace(".NS", "").strip()
+            for i in range(0, len(symbols), batch_size):
+                batch = symbols[i:i+batch_size]
                 try:
-                    df = data[ticker].dropna() if len(ALL_STOCKS) > 1 else data.dropna()
-                    if not df.empty and len(df) > 5:
-                        b_sig, s_sig = calculate_buy_sell_signals(df)
-                        b_sig.name = clean_sym
-                        s_sig.name = clean_sym
-                        sector_buy.append(b_sig)
-                        sector_sell.append(s_sig)
-                        valid_tickers.append(clean_sym)
-                        total_scanned_count += 1
+                    data = yf.download(batch, period="1mo", interval="1d", group_by='ticker', progress=False)
+                    for ticker in batch:
+                        clean_sym = ticker.replace(".NS", "").strip()
+                        try:
+                            df = data[ticker].dropna() if len(batch) > 1 else data.dropna()
+                            if not df.empty and len(df) > 5:
+                                b_sig, s_sig = calculate_signals(df)
+                                sec = sym_to_sector.get(clean_sym, "ALL OTHER NSE EQUITIES")
+                                
+                                if sec not in scanned_records:
+                                    scanned_records[sec] = []
+                                
+                                scanned_records[sec].append({
+                                    "symbol": clean_sym,
+                                    "buy_sig": b_sig,
+                                    "sell_sig": s_sig
+                                })
+                        except Exception:
+                            continue
                 except Exception:
                     continue
+                time.sleep(0.05)
 
-            if sector_buy and sector_sell:
-                combined_buy = pd.concat(sector_buy, axis=1).fillna(False)
-                combined_sell = pd.concat(sector_sell, axis=1).fillna(False)
-                
-                recent_dates = combined_buy.tail(5).index[::-1]
+            matrix = []
+            dates_list = []
+            stock_details_map = {}
+            total_count = 0
+
+            for sector, stock_list in scanned_records.items():
+                if not stock_list:
+                    continue
+
+                total_count += len(stock_list)
+                ref_buy = stock_list[0]['buy_sig']
+                recent_dates = ref_buy.tail(5).index[::-1]
                 dates_list = [d.strftime('%b %d') for d in recent_dates]
 
                 buy_pcts = []
                 sell_pcts = []
 
                 for d in recent_dates:
-                    b_cnt = int(combined_buy.loc[d].sum()) if d in combined_buy.index else 0
-                    s_cnt = int(combined_sell.loc[d].sum()) if d in combined_sell.index else 0
+                    b_cnt = sum([1 for item in stock_list if item['buy_sig'].get(d, False)])
+                    s_cnt = sum([1 for item in stock_list if item['sell_sig'].get(d, False)])
                     
-                    t_count = len(valid_tickers)
-                    buy_pcts.append(int((b_cnt / t_count) * 100) if t_count > 0 else 0)
-                    sell_pcts.append(int((s_cnt / t_count) * 100) if t_count > 0 else 0)
+                    sec_total = len(stock_list)
+                    buy_pcts.append(int((b_cnt / sec_total) * 100))
+                    sell_pcts.append(int((s_cnt / sec_total) * 100))
 
                 latest_d = recent_dates[0]
                 details = []
-                for sym in valid_tickers:
-                    is_b = bool(combined_buy.loc[latest_d, sym]) if sym in combined_buy.columns else False
-                    is_s = bool(combined_sell.loc[latest_d, sym]) if sym in combined_sell.columns else False
+                for item in stock_list:
+                    is_b = item['buy_sig'].get(latest_d, False)
+                    is_s = item['sell_sig'].get(latest_d, False)
                     
                     status = "⚪ NO SIGNAL"
                     if is_b:
@@ -117,38 +160,32 @@ def run_screener():
                         status = "🔴 SELL SIGNAL"
 
                     details.append({
-                        "symbol": sym,
+                        "symbol": item['symbol'],
                         "status": status,
-                        "tv_link": f"https://in.tradingview.com/chart/?symbol=NSE:{sym}"
+                        "tv_link": f"https://in.tradingview.com/chart/?symbol=NSE:{item['symbol']}"
                     })
 
                 stock_details_map[sector] = details
 
                 matrix.append({
                     "Sector": sector,
-                    "CompanyCount": len(valid_tickers),
+                    "CompanyCount": len(stock_list),
                     "BuySignals": buy_pcts,
                     "SellSignals": sell_pcts
                 })
 
-        CACHE = {
-            "dates": dates_list,
-            "matrix": matrix,
-            "total_scanned": total_scanned_count,
-            "stock_details": stock_details_map
-        }
-    except Exception as e:
-        print("Screener Execution Error:", e)
+            with cache_lock:
+                CACHE["dates"] = dates_list
+                CACHE["matrix"] = matrix
+                CACHE["total_scanned"] = total_count
+                CACHE["stock_details"] = stock_details_map
 
-# Initial sync load at startup
-run_screener()
+        except Exception as e:
+            print("Background Scanner Error:", e)
 
-def background_timer():
-    while True:
-        time.sleep(900)  # Refresh every 15 mins
-        run_screener()
+        time.sleep(1800) # Rescan every 30 mins
 
-threading.Thread(target=background_timer, daemon=True).start()
+threading.Thread(target=bg_scanner, daemon=True).start()
 
 @app.route('/')
 def index():
@@ -156,13 +193,19 @@ def index():
 
 @app.route('/api/screener-data')
 def screener_data():
-    return jsonify(CACHE)
+    with cache_lock:
+        return jsonify({
+            "dates": CACHE.get("dates", []),
+            "matrix": CACHE.get("matrix", []),
+            "total_scanned": CACHE.get("total_scanned", 0)
+        })
 
 @app.route('/details')
 def details():
     sector_name = request.args.get('sector', '')
-    details_map = CACHE.get("stock_details", {})
-    stocks = details_map.get(sector_name, [])
+    with cache_lock:
+        details_map = CACHE.get("stock_details", {})
+        stocks = details_map.get(sector_name, [])
     return render_template('details.html', sector=sector_name, stocks=stocks)
 
 if __name__ == '__main__':
