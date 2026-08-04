@@ -2,4 +2,4 @@ flask
 gunicorn
 pandas
 numpy
-nselib
+yfinance
