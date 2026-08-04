@@ -5,8 +5,9 @@
     <title>NSE Market Pulse Screener</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, sans-serif; margin: 20px; background-color: #f8f9fa; }
-        h1 { color: #1e293b; }
-        table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        h1 { color: #1e293b; margin-bottom: 5px; }
+        .stats-bar { background: #1e293b; color: #38bdf8; padding: 12px 20px; border-radius: 8px; font-size: 18px; font-weight: bold; margin-bottom: 20px; display: inline-block; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; background: white; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
         th, td { padding: 12px; text-align: center; border: 1px solid #e2e8f0; }
         th { background-color: #0f172a; color: white; }
         .sector-cell, .count-cell { font-weight: bold; cursor: pointer; color: #2563eb; }
@@ -20,7 +21,9 @@
 </head>
 <body>
 
-    <h1>🔥 Market Pulse - Sector Heatmap</h1>
+    <h1>🔥 Market Pulse - Unlimited Sector Screener</h1>
+    <div class="stats-bar" id="totalScanned">🔍 Scanned Stocks: <span>Scanning...</span></div>
+    
     <p>💡 Company Count அல்லது Sector-ஐ கிளிக் செய்தால் <b>புதிய Tab-ல் (New Tab)</b> விவரங்கள் திறக்கும்.</p>
 
     <table id="screenerTable">
@@ -31,44 +34,50 @@
             </tr>
         </thead>
         <tbody id="tableBody">
-            <tr><td colspan="12">தரவுகள் பெறப்படுகின்றன... தயவுசெய்து காத்திருக்கவும்...</td></tr>
+            <tr><td colspan="12">அனைத்து NSE பங்குகளின் நேரலைத் தரவுகள் ஸ்கேன் செய்யப்படுகின்றன... தயவுசெய்து சிறிது நேரம் காத்திருக்கவும்...</td></tr>
         </tbody>
     </table>
 
     <script>
         async function fetchScreener() {
-            const response = await fetch('/api/screener-data');
-            const data = await response.json();
-            
-            const headerRow = document.getElementById('headerRow');
-            data.dates.forEach(d => {
-                const th = document.createElement('th');
-                th.innerText = d;
-                headerRow.appendChild(th);
-            });
+            try {
+                const response = await fetch('/api/screener-data');
+                const data = await response.json();
+                
+                document.getElementById('totalScanned').innerHTML = `🔍 Scanned Stocks: <span style="color:#22c55e;">${data.total_scanned} Stocks Listed</span>`;
 
-            const tbody = document.getElementById('tableBody');
-            tbody.innerHTML = '';
-
-            data.matrix.forEach(row => {
-                const tr = document.createElement('tr');
-                const detailUrl = `/details?sector=${encodeURIComponent(row.Sector)}`;
-
-                let html = `<td class="sector-cell" onclick="window.open('${detailUrl}', '_blank')">${row.Sector}</td>`;
-                html += `<td class="count-cell" onclick="window.open('${detailUrl}', '_blank')">${row.CompanyCount}</td>`;
-
-                row.Signals.forEach(val => {
-                    let colorClass = 'heat-0';
-                    if(val >= 60) colorClass = 'heat-100';
-                    else if(val >= 30) colorClass = 'heat-66';
-                    else if(val > 0) colorClass = 'heat-33';
-
-                    html += `<td class="${colorClass}">${val}%</td>`;
+                const headerRow = document.getElementById('headerRow');
+                data.dates.forEach(d => {
+                    const th = document.createElement('th');
+                    th.innerText = d;
+                    headerRow.appendChild(th);
                 });
 
-                tr.innerHTML = html;
-                tbody.appendChild(tr);
-            });
+                const tbody = document.getElementById('tableBody');
+                tbody.innerHTML = '';
+
+                data.matrix.forEach(row => {
+                    const tr = document.createElement('tr');
+                    const detailUrl = `/details?sector=${encodeURIComponent(row.Sector)}`;
+
+                    let html = `<td class="sector-cell" onclick="window.open('${detailUrl}', '_blank')">${row.Sector}</td>`;
+                    html += `<td class="count-cell" onclick="window.open('${detailUrl}', '_blank')">${row.CompanyCount}</td>`;
+
+                    row.Signals.forEach(val => {
+                        let colorClass = 'heat-0';
+                        if(val >= 60) colorClass = 'heat-100';
+                        else if(val >= 30) colorClass = 'heat-66';
+                        else if(val > 0) colorClass = 'heat-33';
+
+                        html += `<td class="${colorClass}">${val}%</td>`;
+                    });
+
+                    tr.innerHTML = html;
+                    tbody.appendChild(tr);
+                });
+            } catch (err) {
+                document.getElementById('tableBody').innerHTML = '<tr><td colspan="12" style="color:red;">தரவுகளைப் பெறுவதில் பிழை ஏற்பட்டது. பக்கத்தை Refresh செய்யவும்.</td></tr>';
+            }
         }
 
         fetchScreener();
