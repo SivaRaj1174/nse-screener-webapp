@@ -7,7 +7,6 @@ import time
 
 app = Flask(__name__)
 
-# Complete Comprehensive Sector Mapping for NSE Stocks
 SECTORS = {
     "NIFTY BANK": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS", "KOTAKBANK.NS", "INDUSINDBK.NS", "BANKBARODA.NS", "PNB.NS", "AUBANK.NS", "FEDERALBNK.NS", "IDFCFIRSTB.NS", "CANBK.NS"],
     "NIFTY IT": ["TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS", "LTIM.NS", "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS", "LTTS.NS"],
@@ -22,7 +21,9 @@ SECTORS = {
 CACHE = {
     "dates": [],
     "matrix": [],
-    "total_scanned": 0,
+    "current_scanned": 0,
+    "total_to_scan": 0,
+    "is_scanning": True,
     "stock_details": {}
 }
 
@@ -34,7 +35,6 @@ def get_all_nse_symbols():
         symbols = [f"{sym}.NS" for sym in df_eq['SYMBOL'].tolist()]
         return symbols
     except Exception:
-        # Combined fallback symbols across sectors
         all_syms = []
         for syms in SECTORS.values():
             all_syms.extend(syms)
@@ -74,10 +74,13 @@ def scan_all_stocks_background():
     while True:
         try:
             all_symbols = get_all_nse_symbols()
+            CACHE["total_to_scan"] = len(all_symbols)
+            CACHE["current_scanned"] = 0
+            CACHE["is_scanning"] = True
+            
             batch_size = 50
             scanned_data = {}
             
-            # Map symbol to sector
             symbol_to_sector = {}
             for sector, t_list in SECTORS.items():
                 for t in t_list:
@@ -102,23 +105,20 @@ def scan_all_stocks_background():
                                     "sell_sig": sell_sig
                                 })
                         except Exception:
-                            continue
+                            pass
+                        CACHE["current_scanned"] += 1
                 except Exception:
-                    continue
-                time.sleep(0.1)  # Prevent CPU memory overload
+                    CACHE["current_scanned"] += len(batch)
+                time.sleep(0.05)
 
-            # Build Matrix
             matrix = []
             dates_list = []
             stock_details_map = {}
-            total_count = 0
 
             for sector, stock_list in scanned_data.items():
                 if not stock_list:
                     continue
                 
-                total_count += len(stock_list)
-                # Align dates based on first stock
                 ref_buy = stock_list[0]['buy_sig']
                 recent_dates = ref_buy.tail(5).index[::-1]
                 dates_list = [d.strftime('%b %d') for d in recent_dates]
@@ -162,19 +162,15 @@ def scan_all_stocks_background():
                     "SellSignals": sell_percentages
                 })
 
-            CACHE = {
-                "dates": dates_list,
-                "matrix": matrix,
-                "total_scanned": total_count,
-                "stock_details": stock_details_map
-            }
-            print(f"Scanned {total_count} stocks successfully!")
+            CACHE["dates"] = dates_list
+            CACHE["matrix"] = matrix
+            CACHE["stock_details"] = stock_details_map
+            CACHE["is_scanning"] = False
         except Exception as e:
-            print("Scanner Background Error:", e)
+            print("Scanner Error:", e)
 
-        time.sleep(1800)  # Re-scan every 30 minutes
+        time.sleep(1800)
 
-# Start Background Processing
 bg_thread = threading.Thread(target=scan_all_stocks_background, daemon=True)
 bg_thread.start()
 
@@ -187,7 +183,9 @@ def screener_data():
     return jsonify({
         "dates": CACHE.get("dates", []),
         "matrix": CACHE.get("matrix", []),
-        "total_scanned": CACHE.get("total_scanned", 0)
+        "current_scanned": CACHE.get("current_scanned", 0),
+        "total_to_scan": CACHE.get("total_to_scan", 0),
+        "is_scanning": CACHE.get("is_scanning", True)
     })
 
 @app.route('/details')
