@@ -1,52 +1,32 @@
 from flask import Flask, render_template, jsonify, request
-import urllib.request
-import json
 import pandas as pd
 import numpy as np
-import os
-import time
+import yfinance as yf
 import threading
+import time
 
 app = Flask(__name__)
 
-CACHE_FILE = "nse_data_cache.csv"
+# Cache object to store scanned results instantly in memory
+CACHE = {
+    "dates": [],
+    "matrix": [],
+    "total_scanned": 0,
+    "stock_details": {}
+}
 
-# Sector Mapping
 SECTORS = {
-    "NIFTY BANK": ["HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK", "INDUSINDBK", "BANKBARODA", "PNB", "AUBANK", "FEDERALBNK"],
-    "NIFTY IT": ["TCS", "INFY", "HCLTECH", "WIPRO", "TECHM", "LTIM", "PERSISTENT", "COFORGE"],
-    "NIFTY AUTO": ["TATAMOTORS", "MARUTI", "M&M", "BAJAJ-AUTO", "HEROMOTOCO", "EICHERMOT", "TVSMOTOR"],
-    "NIFTY PHARMA": ["SUNPHARMA", "CIPLA", "DRREDDY", "DIVISLAB", "LUPIN", "TORNTPHARM", "ALKEM"],
-    "NIFTY FMCG": ["ITC", "HINDUNILVR", "NESTLEIND", "BRITANNIA", "TATACONSUM", "DABUR", "GODREJCP"],
-    "NIFTY METAL": ["TATASTEEL", "JINDALSTEL", "HINDALCO", "NMDC", "SAIL", "NATIONALUM", "VEDL"],
-    "NIFTY ENERGY": ["RELIANCE", "NTPC", "POWERGRID", "ONGC", "BPCL", "IOC", "GAIL"],
-    "NIFTY REALTY": ["DLF", "GODREJPROP", "OBEROIRLTY", "PHOENIXLTD", "BRIGADE"]
+    "NIFTY BANK": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS", "KOTAKBANK.NS", "INDUSINDBK.NS", "BANKBARODA.NS", "PNB.NS", "AUBANK.NS", "FEDERALBNK.NS"],
+    "NIFTY IT": ["TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS", "LTIM.NS", "PERSISTENT.NS", "COFORGE.NS"],
+    "NIFTY AUTO": ["TATAMOTORS.NS", "MARUTI.NS", "M&M.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS", "EICHERMOT.NS", "TVSMOTOR.NS"],
+    "NIFTY PHARMA": ["SUNPHARMA.NS", "CIPLA.NS", "DRREDDY.NS", "DIVISLAB.NS", "LUPIN.NS", "TORNTPHARM.NS", "ALKEM.NS"],
+    "NIFTY FMCG": ["ITC.NS", "HINDUNILVR.NS", "NESTLEIND.NS", "BRITANNIA.NS", "TATACONSUM.NS", "DABUR.NS", "GODREJCP.NS"],
+    "NIFTY METAL": ["TATASTEEL.NS", "JINDALSTEL.NS", "HINDALCO.NS", "NMDC.NS", "SAIL.NS", "NATIONALUM.NS", "VEDL.NS"],
+    "NIFTY ENERGY": ["RELIANCE.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS", "BPCL.NS", "IOC.NS", "GAIL.NS"],
+    "NIFTY REALTY": ["DLF.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "PHOENIXLTD.NS", "BRIGADE.NS"]
 }
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': '*/*',
-    'Accept-Language': 'en-US,en;q=0.9'
-}
-
-def fetch_nse_stock_history(symbol):
-    """ Standard library fetch to prevent dependency issues """
-    try:
-        url = f"https://www.nseindia.com/api/historical/cm/equity?symbol={symbol}"
-        req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=10) as response:
-            if response.status == 200:
-                data = json.loads(response.read().decode())
-                if 'data' in data and len(data['data']) > 0:
-                    df = pd.DataFrame(data['data'])
-                    df = df[['CH_TIMESTAMP', 'CH_OPENING_PRICE', 'CH_TRADE_HIGH_PRICE', 'CH_TRADE_LOW_PRICE', 'CH_CLOSING_PRICE']]
-                    df.columns = ['Date', 'Open', 'High', 'Low', 'Close']
-                    df['Date'] = pd.to_datetime(df['Date'])
-                    df.sort_values('Date', inplace=True)
-                    return df
-    except Exception as e:
-        print(f"Fetch error for {symbol}: {e}")
-    return pd.DataFrame()
+ALL_TICKERS = [t for tickers in SECTORS.values() for t in tickers]
 
 def calculate_signals(df):
     try:
@@ -73,38 +53,75 @@ def calculate_signals(df):
     except Exception:
         return pd.Series([False]*len(df), index=df.index)
 
-def background_cache_worker():
-    """ Runs continuously without external scheduler packages """
-    while True:
-        try:
-            print("Worker updating local NSE cache...")
-            records = []
-            for sector, tickers in SECTORS.items():
-                for symbol in tickers:
-                    df = fetch_nse_stock_history(symbol)
+def refresh_scanner():
+    global CACHE
+    try:
+        print("Fetching data via bulk yfinance...")
+        data = yf.download(ALL_TICKERS, period="1mo", interval="1d", group_by='ticker', progress=False)
+        
+        matrix = []
+        dates_list = []
+        stock_details_map = {}
+        
+        for sector, tickers in SECTORS.items():
+            sector_signals = []
+            for ticker in tickers:
+                try:
+                    df = data[ticker].dropna() if len(ALL_TICKERS) > 1 else data.dropna()
                     if not df.empty and len(df) > 5:
-                        sigs = calculate_signals(df)
-                        for dt, buy_val in sigs.items():
-                            records.append({
-                                "Date": dt.strftime('%Y-%m-%d'),
-                                "Sector": sector,
-                                "Symbol": symbol,
-                                "BuySignal": int(buy_val)
-                            })
-                    time.sleep(0.3)
-                    
-            if records:
-                cache_df = pd.DataFrame(records)
-                cache_df.to_csv(CACHE_FILE, index=False)
-                print("Cache updated successfully!")
-        except Exception as e:
-            print("Worker Exception:", e)
+                        sig = calculate_signals(df)
+                        clean_sym = ticker.replace(".NS", "")
+                        sig.name = clean_sym
+                        sector_signals.append(sig)
+                except Exception:
+                    continue
             
-        time.sleep(21600)  # Runs every 6 hours
+            if sector_signals:
+                combined = pd.concat(sector_signals, axis=1).fillna(False)
+                daily_counts = combined.sum(axis=1)
+                recent_counts = daily_counts.tail(5).iloc[::-1]
+                dates_list = [d.strftime('%b %d') for d in recent_counts.index]
+                
+                latest_date = combined.index[-1]
+                latest_day_sig = combined.loc[latest_date]
+                
+                details_list = []
+                for stock in combined.columns:
+                    is_buy = bool(latest_day_sig.get(stock, False))
+                    details_list.append({
+                        "symbol": stock,
+                        "status": "🟢 BUY SIGNAL" if is_buy else "⚪ NO SIGNAL",
+                        "tv_link": f"https://in.tradingview.com/chart/?symbol=NSE:{stock}"
+                    })
+                
+                stock_details_map[sector] = details_list
+                
+                row = {
+                    "Sector": sector,
+                    "CompanyCount": len(tickers),
+                    "Signals": [int((c / len(tickers)) * 100) for c in recent_counts.values]
+                }
+                matrix.append(row)
 
-# Start background thread
-worker_thread = threading.Thread(target=background_cache_worker, daemon=True)
-worker_thread.start()
+        CACHE = {
+            "dates": dates_list,
+            "matrix": matrix,
+            "total_scanned": len(ALL_TICKERS),
+            "stock_details": stock_details_map
+        }
+        print("Scanner cache refreshed successfully!")
+    except Exception as e:
+        print("Scanner refresh error:", e)
+
+# Run initial load on startup
+refresh_scanner()
+
+def background_timer():
+    while True:
+        time.sleep(1800)  # Refresh every 30 mins
+        refresh_scanner()
+
+threading.Thread(target=background_timer, daemon=True).start()
 
 @app.route('/')
 def index():
@@ -112,69 +129,18 @@ def index():
 
 @app.route('/api/screener-data')
 def screener_data():
-    if not os.path.exists(CACHE_FILE):
-        return jsonify({"dates": [], "matrix": [], "total_scanned": 0})
-    
-    try:
-        df = pd.read_csv(CACHE_FILE)
-        if df.empty:
-            return jsonify({"dates": [], "matrix": [], "total_scanned": 0})
-
-        recent_dates = sorted(df['Date'].unique())[-5:]
-        formatted_dates = [pd.to_datetime(d).strftime('%b %d') for d in reversed(recent_dates)]
-        
-        matrix = []
-        total_scanned_count = len(df['Symbol'].unique())
-
-        for sector, tickers in SECTORS.items():
-            sec_df = df[df['Sector'] == sector]
-            signals_pct = []
-            
-            for dt in reversed(recent_dates):
-                day_df = sec_df[sec_df['Date'] == dt]
-                buy_count = day_df['BuySignal'].sum()
-                total_stocks = len(tickers)
-                pct = int((buy_count / total_stocks) * 100) if total_stocks > 0 else 0
-                signals_pct.append(pct)
-                
-            matrix.append({
-                "Sector": sector,
-                "CompanyCount": len(tickers),
-                "Signals": signals_pct
-            })
-
-        return jsonify({
-            "dates": formatted_dates,
-            "matrix": matrix,
-            "total_scanned": total_scanned_count
-        })
-    except Exception:
-        return jsonify({"dates": [], "matrix": [], "total_scanned": 0})
+    return jsonify({
+        "dates": CACHE.get("dates", []),
+        "matrix": CACHE.get("matrix", []),
+        "total_scanned": CACHE.get("total_scanned", 0)
+    })
 
 @app.route('/details')
 def details():
     sector_name = request.args.get('sector', '')
-    stocks_details = []
-    
-    if os.path.exists(CACHE_FILE):
-        try:
-            df = pd.read_csv(CACHE_FILE)
-            sec_df = df[df['Sector'] == sector_name]
-            
-            if not sec_df.empty:
-                latest_date = sec_df['Date'].max()
-                day_df = sec_df[sec_df['Date'] == latest_date]
-                
-                for _, row in day_df.iterrows():
-                    stocks_details.append({
-                        "symbol": row['Symbol'],
-                        "status": "🟢 BUY SIGNAL" if row['BuySignal'] == 1 else "⚪ NO SIGNAL",
-                        "tv_link": f"https://in.tradingview.com/chart/?symbol=NSE:{row['Symbol']}"
-                    })
-        except Exception:
-            pass
-
-    return render_template('details.html', sector=sector_name, stocks=stocks_details)
+    details_map = CACHE.get("stock_details", {})
+    stocks = details_map.get(sector_name, [])
+    return render_template('details.html', sector=sector_name, stocks=stocks)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
