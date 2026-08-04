@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ sector }} - Stock Details</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; margin: 40px; background-color: #f8f9fa; }
+        h2 { color: #0f172a; border-bottom: 2px solid #2563eb; padding-bottom: 10px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        th, td { padding: 14px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th { background-color: #1e293b; color: white; }
+        .buy { color: #15803d; font-weight: bold; background: #dcfce7; padding: 4px 10px; border-radius: 4px; }
+        .no-signal { color: #64748b; background: #f1f5f9; padding: 4px 10px; border-radius: 4px; }
+        .tv-btn { text-decoration: none; color: white; background-color: #2563eb; padding: 8px 14px; border-radius: 6px; font-weight: 600; display: inline-block; }
+        .tv-btn:hover { background-color: #1d4ed8; }
+    </style>
+</head>
+<body>
+
+    <h2>📊 Stock List & Signals for Sector: <u>{{ sector }}</u></h2>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Stock Symbol</th>
+                <th>Signal Status</th>
+                <th>TradingView Link</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for stock in stocks %}
+            <tr>
+                <td><b>{{ stock.symbol }}</b></td>
+                <td><span class="{{ 'buy' if 'BUY' in stock.status else 'no-signal' }}">{{ stock.status }}</span></td>
+                <td><a href="{{ stock.tv_link }}" target="_blank" class="tv-btn">📈 Open TradingView Chart</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+</body>
+</html>
