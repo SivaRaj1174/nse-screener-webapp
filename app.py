@@ -1,21 +1,20 @@
 from flask import Flask, render_template, jsonify, request
 import pandas as pd
 import numpy as np
-from nselib import capital_market
-from datetime import datetime, timedelta
+import yfinance as yf
 
 app = Flask(__name__)
 
-# Extended Comprehensive Sector List
+# Complete NSE Sector Wise Mapping (Using .NS extension for Indian Stocks)
 sector_dict = {
-    "NIFTY BANK": ["HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK", "INDUSINDBK", "BANKBARODA", "PNB", "AUBANK", "IDFCFIRSTB", "FEDERALBNK", "CANBK"],
-    "NIFTY IT": ["TCS", "INFY", "HCLTECH", "WIPRO", "TECHM", "LTIM", "PERSISTENT", "COFORGE", "MPHASIS", "LTTS"],
-    "NIFTY AUTO": ["TATAMOTORS", "MARUTI", "M&M", "BAJAJ-AUTO", "HEROMOTOCO", "EICHERMOT", "TVSMOTOR", "BOSCHLTD", "BHARATFORG", "TIINDIA"],
-    "NIFTY PHARMA": ["SUNPHARMA", "CIPLA", "DRREDDY", "DIVISLAB", "LUPIN", "AURPHARMA", "TORNTPHARM", "ALKEM", "BIOCON", "GLENMARK"],
-    "NIFTY FMCG": ["ITC", "HINDUNILVR", "NESTLEIND", "BRITANNIA", "TATACONSUM", "DABUR", "GODREJCP", "MARICO", "COLPAL", "VBL"],
-    "NIFTY METAL": ["TATASTEEL", "JINDALSTEL", "HINDALCO", "NMDC", "SAIL", "NATIONALUM", "VEDL", "JSWSTEEL", "APLAPOLLO", "HINDZINC"],
-    "NIFTY ENERGY": ["RELIANCE", "NTPC", "POWERGRID", "ONGC", "BPCL", "IOC", "GAIL", "TATAPOWER", "ADANIGREEN", "COALINDIA"],
-    "NIFTY REALTY": ["DLF", "LODHA", "GODREJPROP", "OBEROIRLTY", "PHOENIXLTD", "BRIGADE", "PRESTIGE", "SOBHA"]
+    "NIFTY BANK": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS", "KOTAKBANK.NS", "INDUSINDBK.NS", "BANKBARODA.NS", "PNB.NS", "AUBANK.NS", "IDFCFIRSTB.NS", "FEDERALBNK.NS", "CANBK.NS"],
+    "NIFTY IT": ["TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS", "LTIM.NS", "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS", "LTTS.NS"],
+    "NIFTY AUTO": ["TATAMOTORS.NS", "MARUTI.NS", "M&M.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS", "EICHERMOT.NS", "TVSMOTOR.NS", "BOSCHLTD.NS", "BHARATFORG.NS", "TIINDIA.NS"],
+    "NIFTY PHARMA": ["SUNPHARMA.NS", "CIPLA.NS", "DRREDDY.NS", "DIVISLAB.NS", "LUPIN.NS", "AUBANK.NS", "TORNTPHARM.NS", "ALKEM.NS", "BIOCON.NS", "GLENMARK.NS"],
+    "NIFTY FMCG": ["ITC.NS", "HINDUNILVR.NS", "NESTLEIND.NS", "BRITANNIA.NS", "TATACONSUM.NS", "DABUR.NS", "GODREJCP.NS", "MARICO.NS", "COLPAL.NS", "VBL.NS"],
+    "NIFTY METAL": ["TATASTEEL.NS", "JINDALSTEL.NS", "HINDALCO.NS", "NMDC.NS", "SAIL.NS", "NATIONALUM.NS", "VEDL.NS", "JSWSTEEL.NS", "APLAPOLLO.NS", "HINDZINC.NS"],
+    "NIFTY ENERGY": ["RELIANCE.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS", "BPCL.NS", "IOC.NS", "GAIL.NS", "TATAPOWER.NS", "COALINDIA.NS"],
+    "NIFTY REALTY": ["DLF.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "PHOENIXLTD.NS", "BRIGADE.NS", "PRESTIGE.NS", "SOBHA.NS"]
 }
 
 def calculate_signals(df):
@@ -29,7 +28,6 @@ def calculate_signals(df):
             ha_open.iloc[i] = (ha_open.iloc[i-1] + ha_close.iloc[i-1]) / 2
             
         ha_high = np.maximum(df['High'], np.maximum(ha_open, ha_close))
-        ha_low = np.minimum(df['Low'], np.minimum(ha_open, ha_close))
         
         ha_body = np.abs(ha_close - ha_open)
         nrml_body = np.abs(df['Close'] - df['Open'])
@@ -45,23 +43,6 @@ def calculate_signals(df):
     except Exception:
         return pd.Series([False]*len(df), index=df.index)
 
-def fetch_nse_data(symbol):
-    try:
-        end_date = datetime.now().strftime('%d-%m-%Y')
-        start_date = (datetime.now() - timedelta(days=40)).strftime('%d-%m-%Y')
-        df = capital_market.price_volume_and_deliverable_position_data(symbol=symbol, from_date=start_date, to_date=end_date)
-        if df.empty: return pd.DataFrame()
-        df = df[['Date', 'OpenPrice', 'HighPrice', 'LowPrice', 'ClosePrice', 'TotalTradedQuantity']]
-        df.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
-        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-            df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
-        df['Date'] = pd.to_datetime(df['Date'], format='%d-%b-%Y')
-        df.sort_values('Date', inplace=True)
-        df.set_index('Date', inplace=True)
-        return df[~df.index.duplicated(keep='first')]
-    except Exception:
-        return pd.DataFrame()
-
 CACHED_SIGNALS = {}
 
 @app.route('/')
@@ -74,14 +55,21 @@ def screener_data():
     matrix = []
     dates_list = []
     
+    # Fast Bulk Download using yfinance
+    all_tickers = [ticker for tickers in sector_dict.values() for ticker in tickers]
+    data = yf.download(all_tickers, period="1mo", interval="1d", group_by='ticker', progress=False)
+    
     for sector, tickers in sector_dict.items():
         all_signals = []
         for ticker in tickers:
-            data = fetch_nse_data(ticker)
-            if not data.empty and len(data) > 5:
-                sig = calculate_signals(data)
-                sig.name = ticker
-                all_signals.append(sig)
+            try:
+                df = data[ticker].dropna()
+                if not df.empty and len(df) > 5:
+                    sig = calculate_signals(df)
+                    sig.name = ticker.replace(".NS", "")
+                    all_signals.append(sig)
+            except Exception:
+                continue
         
         if all_signals:
             combined = pd.concat(all_signals, axis=1).fillna(False)
@@ -111,18 +99,20 @@ def details():
         day_signals = sector_df.loc[latest_date]
         
         for stock in stocks:
-            is_buy = day_signals.get(stock, False) if isinstance(day_signals, pd.Series) else False
+            clean_symbol = stock.replace(".NS", "")
+            is_buy = day_signals.get(clean_symbol, False) if isinstance(day_signals, pd.Series) else False
             stock_details.append({
-                "symbol": stock,
+                "symbol": clean_symbol,
                 "status": "🟢 BUY SIGNAL" if is_buy else "⚪ NO SIGNAL",
-                "tv_link": f"https://in.tradingview.com/chart/?symbol=NSE:{stock}"
+                "tv_link": f"https://in.tradingview.com/chart/?symbol=NSE:{clean_symbol}"
             })
     else:
         for stock in stocks:
+            clean_symbol = stock.replace(".NS", "")
             stock_details.append({
-                "symbol": stock,
+                "symbol": clean_symbol,
                 "status": "⚪ NO SIGNAL",
-                "tv_link": f"https://in.tradingview.com/chart/?symbol=NSE:{stock}"
+                "tv_link": f"https://in.tradingview.com/chart/?symbol=NSE:{clean_symbol}"
             })
             
     return render_template('details.html', sector=sector_name, stocks=stock_details)
