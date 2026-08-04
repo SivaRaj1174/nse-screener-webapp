@@ -40,47 +40,56 @@ def fetch_all_nse_symbols():
         if res.status_code == 200:
             df = pd.read_csv(io.StringIO(res.text))
             df_eq = df[df[' SERIES'] == 'EQ']
-            return [f"{sym.strip()}.NS" for sym in df_eq['SYMBOL'].tolist()]
+            syms = [f"{sym.strip()}.NS" for sym in df_eq['SYMBOL'].tolist()]
+            if len(syms) > 500:
+                return syms
     except Exception:
         pass
     
-    # Fallback list
     fallback = []
     for st_list in SECTORS_MAP.values():
         fallback.extend([f"{s}.NS" for s in st_list])
     return list(set(fallback))
 
 def download_and_save_csv():
-    """ Downloads historical data for 2000+ NSE stocks and saves locally """
+    """ Download 2000+ stocks in RAM-safe chunks """
     symbols = fetch_all_nse_symbols()
-    batch_size = 50
-    all_dfs = []
-
-    print(f"Downloading historical data for {len(symbols)} stocks into local CSV...")
+    batch_size = 25  # Small chunk size to avoid RAM limit (512MB)
     
+    if os.path.exists(CACHE_FILE):
+        os.remove(CACHE_FILE)
+
+    first_batch = True
+
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i:i+batch_size]
         try:
             data = yf.download(batch, period="1mo", interval="1d", group_by='ticker', progress=False)
+            batch_dfs = []
+            
             for ticker in batch:
                 clean_sym = ticker.replace(".NS", "").strip()
                 try:
                     df = data[ticker].dropna() if len(batch) > 1 else data.dropna()
                     if not df.empty and len(df) > 5:
-                        df = df[['Open', 'High', 'Low', 'Close']].copy()
-                        df['Symbol'] = clean_sym
-                        df['Date'] = df.index.strftime('%Y-%m-%d')
-                        all_dfs.append(df)
+                        sub_df = df[['Open', 'High', 'Low', 'Close']].copy()
+                        sub_df['Symbol'] = clean_sym
+                        sub_df['Date'] = sub_df.index.strftime('%Y-%m-%d')
+                        batch_dfs.append(sub_df)
                 except Exception:
                     continue
+            
+            if batch_dfs:
+                chunk_df = pd.concat(batch_dfs, ignore_index=True)
+                if first_batch:
+                    chunk_df.to_csv(CACHE_FILE, index=False, mode='w')
+                    first_batch = False
+                else:
+                    chunk_df.to_csv(CACHE_FILE, index=False, mode='a', header=False)
+                del chunk_df  # Free memory immediately
         except Exception:
             continue
-        time.sleep(0.05)
-
-    if all_dfs:
-        full_df = pd.concat(all_dfs, ignore_index=True)
-        full_df.to_csv(CACHE_FILE, index=False)
-        print("CSV storage created successfully!")
+        time.sleep(0.02)
 
 def calculate_signals(df):
     try:
@@ -206,10 +215,14 @@ def process_csv_and_update_cache():
     except Exception as e:
         print("CSV processing error:", e)
 
+# Initial execution on boot
+process_csv_and_update_cache()
+
 def bg_updater():
     while True:
-        process_csv_and_update_cache()
         time.sleep(3600)  # Refresh every hour
+        download_and_save_csv()
+        process_csv_and_update_cache()
 
 threading.Thread(target=bg_updater, daemon=True).start()
 
