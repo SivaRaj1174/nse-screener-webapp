@@ -4,6 +4,7 @@ import numpy as np
 import yfinance as yf
 import threading
 import time
+import requests
 
 app = Flask(__name__)
 
@@ -28,17 +29,26 @@ CACHE = {
 }
 
 def get_all_nse_symbols():
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     try:
         url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-        df = pd.read_csv(url)
-        df_eq = df[df[' SERIES'] == 'EQ']
-        symbols = [f"{sym}.NS" for sym in df_eq['SYMBOL'].tolist()]
-        return symbols
-    except Exception:
-        all_syms = []
-        for syms in SECTORS.values():
-            all_syms.extend(syms)
-        return list(set(all_syms))
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            df = pd.read_csv(pd.compat.StringIO(res.text))
+            df_eq = df[df[' SERIES'] == 'EQ']
+            symbols = [f"{sym}.NS" for sym in df_eq['SYMBOL'].tolist()]
+            if len(symbols) > 100:
+                return symbols
+    except Exception as e:
+        print("NSE Fetch Error, using fallback sector list:", e)
+    
+    # Direct Fallback List across sectors if NSE URL fails
+    all_syms = []
+    for syms in SECTORS.values():
+        all_syms.extend(syms)
+    return list(set(all_syms))
 
 def calculate_buy_sell_signals(df):
     try:
@@ -78,7 +88,7 @@ def scan_all_stocks_background():
             CACHE["current_scanned"] = 0
             CACHE["is_scanning"] = True
             
-            batch_size = 50
+            batch_size = 20
             scanned_data = {}
             
             symbol_to_sector = {}
